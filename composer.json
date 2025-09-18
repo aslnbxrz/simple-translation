@@ -1,0 +1,29 @@
+{
+  "name": "aslnbxrz/simple-translation",
+  "type": "library",
+  "license": "MIT",
+  "description": "Lightweight translation scanner + DB-backed export to lang JSON/PHP for Laravel.",
+  "keywords": ["laravel", "translation", "i18n", "l10n", "scanner"],
+  "version": "1.0.1",
+  "autoload": {
+    "psr-4": {
+      "Aslnbxrz\\SimpleTranslation\\": "src/"
+    }
+  },
+  "authors": [
+    {
+      "name": "aslnbxrz",
+      "email": "bexruz.aslonov1@gmail.com"
+    }
+  ],
+  "require": {
+    "php": "^8.1"
+  },
+  "extra": {
+    "laravel": {
+      "providers": [
+        "Aslnbxrz\\SimpleTranslation\\SimpleTranslationServiceProvider"
+      ]
+    }
+  }
+}
