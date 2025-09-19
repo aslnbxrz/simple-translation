@@ -18,7 +18,7 @@ enum UseLocalesFrom: string
     {
         $languages = match ($this) {
             self::Database => AppLanguage::query()->select(['code', 'name'])->scopes('active')->get()->toArray(),
-            self::Config => Config::get('simple-translation.locales'),
+            self::Config => Config::get('simple-translation.config_locales'),
         };
         return collect($languages);
     }

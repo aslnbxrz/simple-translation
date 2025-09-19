@@ -239,14 +239,12 @@ class AppLanguageService
 
     private static function getUsingFrom(): UseLocalesFrom
     {
-        $val = Config::get('simple-translation.use_locales_from', UseLocalesFrom::Database);
-        return $val instanceof UseLocalesFrom ? $val : UseLocalesFrom::from((string)$val);
+        return UseLocalesFrom::tryFrom(Config::get('simple-translation.use_locales_from')) ?? UseLocalesFrom::Database;
     }
 
     private static function getDriver(): TranslationDriver
     {
-        $val = Config::get('simple-translation.translations.driver', TranslationDriver::JSON);
-        return $val instanceof TranslationDriver ? $val : TranslationDriver::from((string)$val);
+        return TranslationDriver::tryFrom(Config::get('simple-translation.translations.driver')) ?? TranslationDriver::JSON;
     }
 
     private static function getDefaultScope(): string
@@ -256,8 +254,7 @@ class AppLanguageService
 
     private static function getCacheDriver(): CacheDriver
     {
-        $val = Config::get('simple-translation.cache.driver', CacheDriver::InMemory);
-        return $val instanceof CacheDriver ? $val : CacheDriver::from((string)$val);
+        return CacheDriver::tryFrom(Config::get('simple-translation.cache.driver')) ?? CacheDriver::InMemory;
     }
 
     private static function getCacheTtl(): int

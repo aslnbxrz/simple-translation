@@ -25,9 +25,9 @@ class ExportTranslationsCommand extends Command
         if ($drv = $this->option('driver')) {
             $drv = strtolower($drv);
             if ($drv === 'php') {
-                Config::set('simple-translation.translations.driver', TranslationDriver::PHP);
+                Config::set('simple-translation.translations.driver', TranslationDriver::PHP->value);
             } else {
-                Config::set('simple-translation.translations.driver', TranslationDriver::JSON);
+                Config::set('simple-translation.translations.driver', TranslationDriver::JSON->value);
             }
         }
 
