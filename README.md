@@ -302,17 +302,3 @@ Report security issues privately to **bexruz.aslonov1@gmail.com**.
 ## 📄 License
 
 MIT License.
-
----
-
-## 🤝 Contributing
-
-PRs/issues welcome. Please include tests:
-
-```bash
-composer test
-```
-
----
-
-**Made with ❤️ by Bexruz (aslnbxrz)**
