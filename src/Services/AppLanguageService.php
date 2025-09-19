@@ -2,66 +2,106 @@
 
 namespace Aslnbxrz\SimpleTranslation\Services;
 
+use Aslnbxrz\SimpleTranslation\Enums\CacheDriver;
 use Aslnbxrz\SimpleTranslation\Enums\TranslationDriver;
 use Aslnbxrz\SimpleTranslation\Enums\UseLocalesFrom;
 use Aslnbxrz\SimpleTranslation\Models\AppText;
 use Aslnbxrz\SimpleTranslation\Models\AppTextTranslation;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\File;
 
 class AppLanguageService
 {
+    private static array $inRequest = [];
+
     public static function getTranslatedList(?string $scope = null, ?string $locale = null): array
     {
         $scope ??= self::getDefaultScope();
         $locale = $locale ?: App::getLocale();
 
-        /** @var Collection<int, AppText> $texts */
-        $texts = AppText::query()->where('scope', $scope)->get(['id', 'text']);
-
-        if ($texts->isEmpty()) {
-            return [];
+        $inKey = $scope . '|' . $locale;
+        if (isset(self::$inRequest[$inKey])) {
+            return self::$inRequest[$inKey];
         }
 
-        $translations = AppTextTranslation::query()
-            ->where('lang_code', $locale)
-            ->whereIn('app_text_id', $texts->pluck('id'))
-            ->pluck('text', 'app_text_id');
+        $useCache = self::cacheEnabled();
+        $cacheDriver = self::getCacheDriver();
+        $cachePrefix = self::getCachePrefix();
+        $cacheTtl = self::getCacheTtl();
 
-        $result = [];
-        foreach ($texts as $text) {
-            $result[$text->text] = $translations[$text->id] ?? $text->text;
+        $loader = function () use ($scope, $locale): array {
+            /** @var Collection<int, AppText> $texts */
+            $texts = AppText::query()->where('scope', $scope)->get(['id', 'text']);
+
+            if ($texts->isEmpty()) {
+                return [];
+            }
+
+            $translations = AppTextTranslation::query()
+                ->where('lang_code', $locale)
+                ->whereIn('app_text_id', $texts->pluck('id'))
+                ->pluck('text', 'app_text_id');
+
+            $result = [];
+            foreach ($texts as $text) {
+                $result[$text->text] = $translations[$text->id] ?? $text->text;
+            }
+            return $result;
+        };
+
+        // Default: InMemory
+        if ($useCache && $cacheDriver === CacheDriver::Redis) {
+            // cross-request cache with Redis
+            $store = $cacheDriver->value; // null => default cache store
+            $key = self::redisKeyList($cachePrefix, $scope, $locale);
+
+            $data = Cache::store($store)->remember($key, $cacheTtl, $loader);
+        } else {
+            // InMemory or cache disabled
+            $data = $loader();
         }
 
-        return $result;
+        // write to in-request cache for both cases
+        return self::$inRequest[$inKey] = $data;
     }
 
     public static function save(string $text, ?string $scope = null): AppText
     {
         $scope ??= self::getDefaultScope();
         $appText = AppText::query()->updateOrCreate(['scope' => $scope, 'text' => $text]);
+
         self::generateTranslationsToStore($scope);
+        self::flushScopeCaches($scope);
+
         return $appText;
     }
 
     public static function translate(AppText $appText, string $langCode, string $translation): void
     {
         $appText->translate($langCode, $translation);
+
         self::generateTranslationsToStore($appText->scope);
+        self::flushScopeCaches($appText->scope, [$langCode]);
     }
 
     public static function delete(AppText $appText): ?bool
     {
-        return $appText->delete();
+        $scope = $appText->scope;
+        $res = $appText->delete();
+
+        self::flushScopeCaches($scope);
+
+        return $res;
     }
 
-    public static function generateTranslationsToStore(?string $scope = null): bool
+    public static function generateTranslationsToStore(?string $scope = null, bool $force = false): bool
     {
         $scope ??= self::getDefaultScope();
 
-        if (!Config::get('simple-translation.translations.enabled', false)) {
+        if (!Config::get('simple-translation.translations.enabled', false) && !$force) {
             return true;
         }
 
@@ -84,7 +124,6 @@ class AppLanguageService
         }
 
         $idToKey = $texts->pluck('text', 'id');
-
         $baseMap = $texts->pluck('text', 'text')->all();
 
         $translations = AppTextTranslation::query()
@@ -124,7 +163,6 @@ class AppLanguageService
         $scope ??= self::getDefaultScope();
         $driver = self::getDriver();
 
-        // Resolve full destination file path using the enum helpers
         $file = $driver->filePath($language, $scope);
 
         // Ensure directory exists
@@ -133,17 +171,55 @@ class AppLanguageService
             File::makeDirectory($dir, 0777, true, true);
         }
 
-        // Encode contents according to driver
         $contents = $driver->encode($data);
-
         if ($contents === null) {
             return false;
         }
 
-        // Write atomically
         $written = File::put($file, $contents, LOCK_EX);
 
         return $written !== false;
+    }
+
+    /**
+     * Invalidation: clear cross-request cache and redis cache.
+     */
+    private static function flushScopeCaches(string $scope, ?array $locales = null): void
+    {
+        // In-request cache
+        if ($locales === null) {
+            // filter keys by scope
+            foreach (array_keys(self::$inRequest) as $k) {
+                if (\str_starts_with($k, $scope . '|')) {
+                    unset(self::$inRequest[$k]);
+                }
+            }
+        } else {
+            foreach ($locales as $code) {
+                unset(self::$inRequest[$scope . '|' . $code]);
+            }
+        }
+
+        // Redis cache clear cross-request cache
+        $useCache = self::cacheEnabled();
+        $driver = self::getCacheDriver();
+        if (!$useCache || $driver !== CacheDriver::Redis) {
+            return;
+        }
+
+        $store = $driver->value;
+        $prefix = self::getCachePrefix();
+
+        $codes = $locales ?: self::getLanguages()->pluck('code')->all();
+        foreach ($codes as $code) {
+            Cache::store($store)->forget(self::redisKeyList($prefix, $scope, $code));
+        }
+    }
+
+    private static function redisKeyList(string $prefix, string $scope, string $locale): string
+    {
+        // namespacing: {{simple_translation_prefix}}:list:{scope}:{locale}
+        return rtrim($prefix, ':') . ':list:' . $scope . ':' . $locale;
     }
 
     public static function getLanguages(): Collection
@@ -176,5 +252,26 @@ class AppLanguageService
     private static function getDefaultScope(): string
     {
         return Config::get('simple-translation.default_scope', 'app');
+    }
+
+    private static function getCacheDriver(): CacheDriver
+    {
+        $val = Config::get('simple-translation.cache.driver', CacheDriver::InMemory);
+        return $val instanceof CacheDriver ? $val : CacheDriver::from((string)$val);
+    }
+
+    private static function getCacheTtl(): int
+    {
+        return Config::get('simple-translation.cache.ttl', 300);
+    }
+
+    private static function getCachePrefix(): string
+    {
+        return Config::get('simple-translation.cache.prefix', 'simple_translation');
+    }
+
+    private static function cacheEnabled(): bool
+    {
+        return (bool)Config::get('simple-translation.cache.enabled', true);
     }
 }
