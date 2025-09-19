@@ -4,7 +4,7 @@
   "license": "MIT",
   "description": "Lightweight translation scanner + DB-backed export to lang JSON/PHP for Laravel.",
   "keywords": ["laravel", "translation", "i18n", "l10n", "scanner"],
-  "version": "1.0.2",
+  "version": "1.0.3",
   "autoload": {
     "psr-4": {
       "Aslnbxrz\\SimpleTranslation\\": "src/"

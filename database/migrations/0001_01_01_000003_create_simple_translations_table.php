@@ -17,10 +17,11 @@ return new class extends Migration {
         });
 
         Schema::create('app_text_translations', function (Blueprint $table) {
+            $table->id();
             $table->foreignId('app_text_id')->constrained('app_texts')->cascadeOnDelete();
             $table->string('lang_code')->index();
             $table->text('text');
-            $table->primary(['app_text_id', 'lang_code']);
+            $table->unique(['app_text_id', 'lang_code']);
         });
     }
 

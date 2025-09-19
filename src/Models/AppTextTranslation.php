@@ -9,9 +9,6 @@ class AppTextTranslation extends Model
 {
     protected $table = 'app_text_translations';
     protected $fillable = ['lang_code', 'app_text_id', 'text'];
-    protected $primaryKey = null;
-    protected $keyType = 'string';
-    public $incrementing = false;
     public $timestamps = false;
 
     public function text(): BelongsTo

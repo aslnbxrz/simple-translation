@@ -14,13 +14,14 @@ class AppText extends Model
 
     public function translations(): HasMany
     {
-        return $this->hasMany(AppTextTranslation::class);
+        return $this->hasMany(AppTextTranslation::class, 'app_text_id');
     }
 
     public function translate(string $langCode, string $translation): void
     {
-        $this->translations()->updateOrCreate(['lang_code' => $langCode], [
-            'text' => $translation
-        ]);
+        $this->translations()->updateOrCreate(
+            ['app_text_id' => $this->id, 'lang_code' => $langCode],
+            ['text' => $translation]
+        );
     }
 }
