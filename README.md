@@ -259,17 +259,6 @@ Cascade delete ensures translations are removed with their parent text.
 
 ---
 
-## 🧪 Testing (Orchestra Testbench)
-
-```bash
-composer install
-composer test
-```
-
-Uses SQLite in-memory by default. MySQL/PostgreSQL supported.
-
----
-
 ## 🛠 Troubleshooting
 
 - **`no such table: app_languages`** → publish & run migrations.
