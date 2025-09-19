@@ -1,5 +1,9 @@
 # Simple Translation
 
+[![Latest Version on Packagist](https://img.shields.io/packagist/v/aslnbxrz/simple-translation.svg)](https://packagist.org/packages/aslnbxrz/simple-translation)
+[![Total Downloads](https://img.shields.io/packagist/dt/aslnbxrz/simple-translation.svg)](https://packagist.org/packages/aslnbxrz/simple-translation)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 *A lightweight, production-ready translation manager for Laravel.*
 
 Simple Translation lets you **scan** your codebase for translation keys, **store** them in your database, and **export**
