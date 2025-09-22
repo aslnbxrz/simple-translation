@@ -2,6 +2,10 @@
 
 return [
     'default_scope' => 'app',
+    'available_scopes' => [
+        'app',
+        'admin'
+    ],
     'use_locales_from' => 'config', // config | database
     'config_locales' => [
         [

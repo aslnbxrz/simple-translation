@@ -16,10 +16,14 @@ enum UseLocalesFrom: string
      */
     public function getLanguages(): Collection
     {
-        $languages = match ($this) {
-            self::Database => AppLanguage::query()->select(['code', 'name'])->scopes('active')->get()->toArray(),
-            self::Config => Config::get('simple-translation.config_locales'),
-        };
+        try {
+            $languages = match ($this) {
+                self::Database => AppLanguage::query()->select(['code', 'name'])->scopes('active')->get()->toArray(),
+                self::Config => Config::get('simple-translation.config_locales'),
+            };
+        } catch (\Throwable $th) {
+            $languages = [];
+        }
         return collect($languages);
     }
 }
