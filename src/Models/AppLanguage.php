@@ -15,9 +15,4 @@ class AppLanguage extends Model
     {
         return $query->where('is_active', true);
     }
-
-    public function scopeInActive(Builder $query): Builder
-    {
-        return $query->where('is_active', false);
-    }
 }

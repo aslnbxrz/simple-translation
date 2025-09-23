@@ -7,59 +7,46 @@ use Aslnbxrz\SimpleTranslation\Services\AppLanguageService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
 use Symfony\Component\Finder\Finder;
-use Throwable;
 
 class ScanTranslationsCommand extends Command
 {
     protected $signature = 'simple-translation:scan
-        {--paths= : Comma-separated dirs to scan (default: app,resources)}
-        {--ext= : Comma-separated extensions (php,blade.php,vue,js,ts)}
-        {--scope= : (e.g. app|admin)}
-        {--dry : Dry-run (do not write to DB)}
-        {--no-progress : Hide progress bar}
-        {--exclude= : Comma-separated dirs to exclude (vendor,node_modules,storage)}';
+        {--paths= : CSV dirs to scan (default: app,resources)}
+        {--ext= : CSV extensions (php,blade.php,vue,js,ts)}
+        {--exclude= : CSV dirs to exclude (vendor,node_modules,storage)}
+        {--scope= : Scope to store the found keys under}
+        {--dry : Dry-run (no DB writes)}
+        {--no-progress : Hide progress bar}';
 
-    protected $description = 'Scan project for translation calls and persist keys to database';
+    protected $description = 'Scan project for translation calls and persist keys to DB under a single scope.';
 
-    /** Regex patterns to extract translation keys */
+    /** Patterns for extracting keys. */
     private array $patterns = [
-        // __('key') or __("key", ...)
         '/__\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/u',
-        // @lang('key') or @lang("key")
         '/@lang\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/u',
-        // trans('key')
         '/\btrans\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/u',
-        // trans_choice('key', ...)
         '/\btrans_choice\(\s*[\'"]([^\'"]+)[\'"]\s*,/u',
+        '/___\(\s*[\'"]([^\'"]+)[\'"]\s*(?:,|\))/u',
     ];
 
     public function handle(): int
     {
-        // 1) Options & defaults
-        $paths = $this->csvOption('paths', ['app', 'resources']);
-        $exts = $this->csvOption('ext', ['php', 'blade.php', 'vue', 'js', 'ts']);
-        $exclude = $this->csvOption('exclude', ['vendor', 'node_modules', 'storage']);
+        $paths = $this->csv('paths', ['app', 'resources']);
+        $exts = $this->csv('ext', ['php', 'blade.php', 'vue', 'js', 'ts']);
+        $exclude = $this->csv('exclude', ['vendor', 'node_modules', 'storage']);
         $dry = (bool)$this->option('dry');
         $noProg = (bool)$this->option('no-progress');
 
-        // 2) Determine "scope" value stored in AppText->scope
         $scope = (string)($this->option('scope') ?: Config::get('simple-translation.default_scope', 'app'));
 
-        // 3) Build finder
         $finder = new Finder();
         $finder->files();
 
         foreach ($paths as $p) {
-            if (is_dir(base_path($p))) {
-                $finder->in(base_path($p));
-            }
+            if (is_dir(base_path($p))) $finder->in(base_path($p));
         }
+        foreach ($exclude as $ex) $finder->exclude($ex);
 
-        foreach ($exclude as $ex) {
-            $finder->exclude($ex);
-        }
-
-        // Extensions filter (supports blade.php)
         $finder->filter(function (\SplFileInfo $file) use ($exts) {
             $name = $file->getFilename();
             foreach ($exts as $ext) {
@@ -73,86 +60,69 @@ class ScanTranslationsCommand extends Command
         });
 
         if (!$finder->hasResults()) {
-            $this->info('Nothing to scan. Check --paths / --ext / --exclude options.');
+            $this->info('Nothing to scan.');
             return self::SUCCESS;
         }
 
-        // 4) Scan
         $keys = [];
         $files = iterator_to_array($finder->getIterator());
-        $countFiles = count($files);
-
         $bar = null;
         if (!$noProg) {
-            $bar = $this->output->createProgressBar($countFiles);
+            $bar = $this->output->createProgressBar(count($files));
             $bar->start();
         }
 
         foreach ($files as $file) {
-            try {
-                $content = @file_get_contents($file->getRealPath());
-                if ($content === false || $content === '') {
-                    if ($bar) $bar->advance();
-                    continue;
-                }
+            $content = @file_get_contents($file->getRealPath());
+            if (!$content) {
+                $bar?->advance();
+                continue;
+            }
 
-                foreach ($this->patterns as $rx) {
-                    if (preg_match_all($rx, $content, $m)) {
-                        foreach ($m[1] as $key) {
-                            // Trim and normalize whitespace
-                            $k = trim($key);
-                            if ($k !== '') {
-                                $keys[$k] = true; // dedupe
-                            }
-                        }
+            foreach ($this->patterns as $rx) {
+                if (preg_match_all($rx, $content, $m)) {
+                    foreach ($m[1] as $key) {
+                        $k = trim($key);
+                        if ($k !== '') $keys[$k] = true;
                     }
                 }
-            } catch (Throwable $e) {
-                // Skip unreadable file
-            } finally {
-                if ($bar) $bar->advance();
             }
+            $bar?->advance();
         }
 
-        if ($bar) {
-            $bar->finish();
-            $this->newLine();
-        }
-
+        $bar?->finish();
+        $this->newLine();
         $keys = array_keys($keys);
-        $this->info('Files scanned: ' . $countFiles);
+
+        $this->info('Files scanned: ' . count($files));
         $this->info('Keys found: ' . count($keys));
 
         if ($dry || empty($keys)) {
-            if ($dry) $this->comment('Dry-run: no DB writes performed.');
+            if ($dry) $this->comment('Dry-run: no DB writes.');
             return self::SUCCESS;
         }
 
-        // 5) Persist to DB (upsert-like via updateOrCreate)
         $inserted = 0;
         $skipped = 0;
-
         foreach ($keys as $text) {
-            // AppLanguageService::save() sizda bor: updateOrCreate(['scope'=>$scope,'text'=>$text])
             $exists = AppText::query()->where('scope', $scope)->where('text', $text)->exists();
             if ($exists) {
                 $skipped++;
                 continue;
             }
-            AppLanguageService::save($text, $scope);
+            AppLanguageService::translate($text, $scope); // ensures DB key + writes file with default
             $inserted++;
         }
 
-        $this->info("Inserted: {$inserted}, Skipped (exists): {$skipped}");
-
+        $this->info("Inserted: {$inserted}, Skipped: {$skipped}");
         return self::SUCCESS;
     }
 
-    /** Parse comma-separated option into trimmed array */
-    private function csvOption(string $name, array $default): array
+    /** @return array<int,string> */
+    private function csv(string $name, array $default): array
     {
         $val = (string)($this->option($name) ?? '');
         if ($val === '') return $default;
-        return array_values(array_filter(array_map('trim', explode(',', $val)), fn($v) => $v !== ''));
+        return array_values(array_filter(array_map('trim', explode(',', $val))));
     }
 }

@@ -2,7 +2,6 @@
 
 namespace Aslnbxrz\SimpleTranslation\Console;
 
-use Aslnbxrz\SimpleTranslation\Enums\TranslationDriver;
 use Aslnbxrz\SimpleTranslation\Services\AppLanguageService;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Config;
@@ -10,48 +9,55 @@ use Illuminate\Support\Facades\Config;
 class ExportTranslationsCommand extends Command
 {
     protected $signature = 'simple-translation:export
-        {--scope= : Scope name (default: config("simple-translation.default_scope"))}
-        {--driver= : Force export driver (json|php). Overrides config}
-        {--path= : Force export path. Overrides config}
-        {--force : Export even if config(translations.enabled=false)}';
+        {--scope= : CSV scopes (e.g. app,exceptions). Omit with --all}
+        {--all : Export all scopes from config("simple-translation.available_scopes")}
+        {--locales= : CSV locales filter (e.g. en,uz). Omit = all configured}';
 
-    protected $description = 'Export existing DB translations to lang files (JSON or PHP)';
+    protected $description = 'Export DB translations into per-scope files (does not touch other scopes).';
 
     public function handle(): int
     {
-        $scope = (string)($this->option('scope') ?: Config::get('simple-translation.default_scope', 'app'));
-
-        // Driver override
-        if ($drv = $this->option('driver')) {
-            $drv = strtolower($drv);
-            if ($drv === 'php') {
-                Config::set('simple-translation.translations.driver', TranslationDriver::PHP->value);
-            } else {
-                Config::set('simple-translation.translations.driver', TranslationDriver::JSON->value);
+        // Determine scopes
+        $scopes = $this->csv('scope');
+        if ($this->option('all') || empty($scopes)) {
+            $scopes = array_keys((array) config('simple-translation.available_scopes', []));
+            if (empty($scopes)) {
+                $scopes = [(string) config('simple-translation.default_scope', 'app')];
             }
         }
 
-        // Path override
-        if ($path = $this->option('path')) {
-            Config::set('simple-translation.translations.path', $path);
+        // Limit locales for this run (temporary override)
+        $locales = $this->csv('locales');
+        if (!empty($locales)) {
+            Config::set('simple-translation.locales.override', $locales);
         }
 
-        $enabled = (bool)Config::get('simple-translation.translations.enabled', false);
-        $force = (bool)$this->option('force');
+        $okAll = true;
+        foreach ($scopes as $scope) {
+            $ok = AppLanguageService::exportScope($scope);
+            $this->line($ok ? "Exported: {$scope}" : "Failed: {$scope}");
+            $okAll = $okAll && $ok;
+        }
 
-        if (!$enabled && !$force) {
-            $this->comment("Export skipped: translations.enabled=false. Use --force to override.");
+        // Clear override
+        if (!empty($locales)) {
+            Config::offsetUnset('simple-translation.locales.override');
+        }
+
+        if ($okAll) {
+            $this->info('Translations exported successfully.');
             return self::SUCCESS;
         }
 
-        $ok = AppLanguageService::generateTranslationsToStore($scope, $force);
-
-        if ($ok) {
-            $this->info("Translations exported successfully for scope '{$scope}'.");
-            return self::SUCCESS;
-        }
-
-        $this->error("Export failed for scope '{$scope}'.");
+        $this->error('Some scopes failed to export.');
         return self::FAILURE;
+    }
+
+    /** @return array<int,string> */
+    private function csv(string $name): array
+    {
+        $raw = (string) ($this->option($name) ?? '');
+        if ($raw === '') return [];
+        return array_values(array_filter(array_map('trim', explode(',', $raw))));
     }
 }

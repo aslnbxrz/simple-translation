@@ -5,55 +5,54 @@ namespace Aslnbxrz\SimpleTranslation;
 use Aslnbxrz\SimpleTranslation\Console\ExportTranslationsCommand;
 use Aslnbxrz\SimpleTranslation\Console\ScanTranslationsCommand;
 use Aslnbxrz\SimpleTranslation\Console\SyncTranslationsCommand;
-use Aslnbxrz\SimpleTranslation\Services\AppLanguageService;
+use Aslnbxrz\SimpleTranslation\Stores\Contracts\StoreDriver;
+use Aslnbxrz\SimpleTranslation\Stores\JsonPerScopeStore;
+use Aslnbxrz\SimpleTranslation\Stores\PhpArrayPerScopeStore;
+use Illuminate\Support\Facades\Config;
 use Illuminate\Support\ServiceProvider;
 
 class SimpleTranslationServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->mergeConfigFrom(
-            __DIR__ . '/../config/simple-translation.php',
-            'simple-translation'
-        );
+        // Merge config
+        $this->mergeConfigFrom(__DIR__ . '/../config/simple-translation.php', 'simple-translation');
+
+        // Bind store driver (runtime + export)
+        $this->app->singleton(StoreDriver::class, function () {
+            $driver = (string)Config::get('simple-translation.translations.driver', 'json-per-scope');
+            return match ($driver) {
+                'php-array-per-scope' => new PhpArrayPerScopeStore(),
+                default => new JsonPerScopeStore(),
+            };
+        });
     }
 
     public function boot(): void
     {
-        // Load helpers (fallback if not composer "files")
+        // Load helpers (in case composer "files" not yet loaded)
         $helpers = __DIR__ . '/Support/helpers.php';
-        if (is_file($helpers)) {
-            require_once $helpers;
-        }
+        if (is_file($helpers)) require_once $helpers;
 
-        // Config publish
-        $this->publishes([
-            __DIR__ . '/../config/simple-translation.php' => config_path('simple-translation.php'),
-        ], 'simple-translation');
-
+        // Publish config
         $this->publishes([
             __DIR__ . '/../config/simple-translation.php' => config_path('simple-translation.php'),
         ], 'simple-translation-config');
 
-
-        // Migration publish
+        // Publish migrations
         $this->publishes([
             __DIR__ . '/../database/migrations/0001_01_01_000003_create_simple_translations_table.php'
             => database_path('migrations/0001_01_01_000003_create_simple_translations_table.php'),
-        ], 'simple-translation-migration-texts');
+            __DIR__ . '/../database/migrations/0001_01_01_000004_create_app_languages_table.php'
+            => database_path('migrations/0001_01_01_000004_create_app_languages_table.php'),
+        ], 'simple-translation-migrations');
 
-        if (AppLanguageService::usingDatabase()) {
-            $this->publishes([
-                __DIR__ . '/../database/migrations/0001_01_01_000004_create_app_languages_table.php'
-                => database_path('migrations/0001_01_01_000004_create_app_languages_table.php'),
-            ], 'simple-translation-migration-languages');
-        }
-
+        // Commands
         if ($this->app->runningInConsole()) {
             $this->commands([
                 ScanTranslationsCommand::class,
                 ExportTranslationsCommand::class,
-                SyncTranslationsCommand::class
+                SyncTranslationsCommand::class,
             ]);
         }
     }

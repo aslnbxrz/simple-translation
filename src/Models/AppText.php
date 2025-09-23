@@ -9,7 +9,6 @@ class AppText extends Model
 {
     protected $table = 'app_texts';
     protected $fillable = ['scope', 'text'];
-
     public $timestamps = false;
 
     public function translations(): HasMany

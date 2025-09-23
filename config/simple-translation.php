@@ -1,30 +1,39 @@
 <?php
 
 return [
+    // Default scope used when none is provided.
     'default_scope' => 'app',
+
+    // Scopes registry: used by --all and select options.
     'available_scopes' => [
-        'app',
-        'admin'
+        'app' => 'App',
+        'admin' => 'Admin',
+        'exceptions' => 'Exceptions',
     ],
-    'use_locales_from' => 'config', // config | database
+
+    // Where to resolve available locales from: "config" or "database".
+    'use_locales_from' => 'config',
+
+    // Locales for "config" mode.
     'config_locales' => [
-        [
-            'code' => 'en',
-            'name' => 'English',
-        ],
+        ['code' => 'en', 'name' => 'English'],
     ],
 
+    // Runtime store driver (also used by export). Per-scope files only.
     'translations' => [
-        'enabled' => false,
-        'driver' => 'json', // json | php
-        'path' => null, // null for default laravel lang_path()
-        'php_file_name' => 'simple_translations',
-    ],
-
-    'cache' => [
-        'enabled' => true,
-        'driver' => 'in_memory', // in_memory | redis
-        'ttl' => 300,
-        'prefix' => 'simple_translation',
+        'driver' => 'json-per-scope', // json-per-scope | php-array-per-scope
+        'drivers' => [
+            // storage/lang/json/{locale}/{scope}.json
+            'json-per-scope' => [
+                'base_dir' => lang_path(),
+                'pretty'   => false, // pretty print json
+                'lock'     => true,  // LOCK_EX on write
+            ],
+            // lang/vendor/simple-translation/{locale}/{scope}.php
+            'php-array-per-scope' => [
+                'base_dir' => lang_path('vendor/simple-translation'),
+                'lock'     => true,  // LOCK_EX on write
+            ],
+        ],
     ],
 ];

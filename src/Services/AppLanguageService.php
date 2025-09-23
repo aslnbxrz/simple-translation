@@ -2,273 +2,220 @@
 
 namespace Aslnbxrz\SimpleTranslation\Services;
 
-use Aslnbxrz\SimpleTranslation\Enums\CacheDriver;
-use Aslnbxrz\SimpleTranslation\Enums\TranslationDriver;
-use Aslnbxrz\SimpleTranslation\Enums\UseLocalesFrom;
+use Aslnbxrz\SimpleTranslation\Models\AppLanguage;
 use Aslnbxrz\SimpleTranslation\Models\AppText;
 use Aslnbxrz\SimpleTranslation\Models\AppTextTranslation;
+use Aslnbxrz\SimpleTranslation\Stores\Contracts\StoreDriver;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Config;
-use Illuminate\Support\Facades\File;
 
+/**
+ * Core translation service.
+ *
+ * Strategy: "File-first, DB as backup".
+ * - Prefer translations from JSON store.
+ * - If missing, check DB.
+ * - If still missing, create key in DB and store default (key itself).
+ */
 class AppLanguageService
 {
-    private static array $inRequest = [];
+    /** In-request memo cache: "scope|locale" => [key => value] */
+    private static array $memo = [];
 
-    public static function getTranslatedList(?string $scope = null, ?string $locale = null): array
+    /**
+     * Translate a key for given scope/locale.
+     *
+     * @param string $key
+     * @param string|null $scope
+     * @param string|null $locale
+     * @return string
+     */
+    public static function translate(string $key, ?string $scope = null, ?string $locale = null): string
     {
-        $scope ??= self::getDefaultScope();
-        $locale = $locale ?: App::getLocale();
+        $scope ??= (string)Config::get('simple-translation.default_scope', 'app');
+        $locale ??= App::getLocale();
 
-        $inKey = $scope . '|' . $locale;
-        if (isset(self::$inRequest[$inKey])) {
-            return self::$inRequest[$inKey];
+        // 1) File lookup
+        $list = self::list($scope, $locale);
+        if (array_key_exists($key, $list)) {
+            return $list[$key] ?? $key;
         }
 
-        $useCache = self::cacheEnabled();
-        $cacheDriver = self::getCacheDriver();
-        $cachePrefix = self::getCachePrefix();
-        $cacheTtl = self::getCacheTtl();
-
-        $loader = function () use ($scope, $locale): array {
-            /** @var Collection<int, AppText> $texts */
-            $texts = AppText::query()->where('scope', $scope)->get(['id', 'text']);
-
-            if ($texts->isEmpty()) {
-                return [];
-            }
-
-            $translations = AppTextTranslation::query()
-                ->where('lang_code', $locale)
-                ->whereIn('app_text_id', $texts->pluck('id'))
-                ->pluck('text', 'app_text_id');
-
-            $result = [];
-            foreach ($texts as $text) {
-                $result[$text->text] = $translations[$text->id] ?? $text->text;
-            }
-            return $result;
-        };
-
-        // Default: InMemory
-        if ($useCache && $cacheDriver === CacheDriver::Redis) {
-            // cross-request cache with Redis
-            $store = $cacheDriver->value; // null => default cache store
-            $key = self::redisKeyList($cachePrefix, $scope, $locale);
-
-            $data = Cache::store($store)->remember($key, $cacheTtl, $loader);
-        } else {
-            // InMemory or cache disabled
-            $data = $loader();
+        // 2) DB lookup
+        $fromDb = self::lookupDb($key, $scope, $locale);
+        if ($fromDb !== null && $fromDb !== '') {
+            self::store()->upsert($scope, $locale, $key, $fromDb);
+            self::$memo[self::mkMemo($scope, $locale)][$key] = $fromDb;
+            return $fromDb;
         }
 
-        // write to in-request cache for both cases
-        return self::$inRequest[$inKey] = $data;
-    }
+        // 3) Ensure DB key + fallback default
+        self::ensureDbKey($key, $scope);
+        self::store()->upsert($scope, $locale, $key, $key);
+        self::$memo[self::mkMemo($scope, $locale)][$key] = $key;
 
-    public static function save(string $text, ?string $scope = null): AppText
-    {
-        $scope ??= self::getDefaultScope();
-        $appText = AppText::query()->updateOrCreate(['scope' => $scope, 'text' => $text]);
-
-        self::generateTranslationsToStore($scope);
-        self::flushScopeCaches($scope);
-
-        return $appText;
-    }
-
-    public static function translate(AppText $appText, string $langCode, string $translation): void
-    {
-        $appText->translate($langCode, $translation);
-
-        self::generateTranslationsToStore($appText->scope);
-        self::flushScopeCaches($appText->scope, [$langCode]);
-    }
-
-    public static function delete(AppText $appText): ?bool
-    {
-        $scope = $appText->scope;
-        $res = $appText->delete();
-
-        self::flushScopeCaches($scope);
-
-        return $res;
-    }
-
-    public static function generateTranslationsToStore(?string $scope = null, bool $force = false): bool
-    {
-        $scope ??= self::getDefaultScope();
-
-        if (!Config::get('simple-translation.translations.enabled', false) && !$force) {
-            return true;
-        }
-
-        /** @var Collection<int, object{code:string}> $languages */
-        $languages = self::getLanguages();
-        if ($languages->isEmpty()) {
-            return true;
-        }
-        $languageCodes = $languages->pluck('code')->unique()->values();
-
-        /** @var Collection<int, AppText> $texts */
-        $texts = AppText::query()->where('scope', $scope)->get(['id', 'text']);
-
-        if ($texts->isEmpty()) {
-            $ok = true;
-            foreach ($languages as $language) {
-                $ok = self::saveToStore($language, [], $scope) && $ok;
-            }
-            return $ok;
-        }
-
-        $idToKey = $texts->pluck('text', 'id');
-        $baseMap = $texts->pluck('text', 'text')->all();
-
-        $translations = AppTextTranslation::query()
-            ->whereIn('lang_code', $languageCodes)
-            ->whereIn('app_text_id', $texts->pluck('id'))
-            ->get(['app_text_id', 'lang_code', 'text']);
-
-        $byLang = $translations->groupBy('lang_code');
-
-        $allOk = true;
-
-        foreach ($languages as $language) {
-            $code = $language['code'];
-
-            $data = $baseMap;
-
-            /** @var Collection<int, AppTextTranslation> $items */
-            $items = $byLang->get($code, collect());
-
-            foreach ($items as $tr) {
-                $key = $idToKey[$tr->app_text_id] ?? null;
-                if ($key !== null && $tr->text !== null && $tr->text !== '') {
-                    $data[$key] = $tr->text;
-                }
-            }
-
-            if (!self::saveToStore($language, $data, $scope)) {
-                $allOk = false;
-            }
-        }
-
-        return $allOk;
-    }
-
-    private static function saveToStore(array $language, array $data, ?string $scope = null): bool
-    {
-        $scope ??= self::getDefaultScope();
-        $driver = self::getDriver();
-
-        $file = $driver->filePath($language, $scope);
-
-        // Ensure directory exists
-        $dir = \dirname($file);
-        if (!File::isDirectory($dir)) {
-            File::makeDirectory($dir, 0777, true, true);
-        }
-
-        $contents = $driver->encode($data);
-        if ($contents === null) {
-            return false;
-        }
-
-        $written = File::put($file, $contents, LOCK_EX);
-
-        return $written !== false;
+        return $key;
     }
 
     /**
-     * Invalidation: clear cross-request cache and redis cache.
+     * Return full translation list for scope+locale (cached).
+     *
+     * @param string|null $scope
+     * @param string|null $locale
+     * @return array<string,string>
      */
-    private static function flushScopeCaches(string $scope, ?array $locales = null): void
+    public static function list(?string $scope = null, ?string $locale = null): array
     {
-        // In-request cache
-        if ($locales === null) {
-            // filter keys by scope
-            foreach (array_keys(self::$inRequest) as $k) {
-                if (\str_starts_with($k, $scope . '|')) {
-                    unset(self::$inRequest[$k]);
+        $scope ??= (string)Config::get('simple-translation.default_scope', 'app');
+        $locale ??= App::getLocale();
+
+        $m = self::mkMemo($scope, $locale);
+        if (isset(self::$memo[$m])) {
+            return self::$memo[$m];
+        }
+
+        $map = self::store()->read($scope, $locale);
+        return self::$memo[$m] = $map;
+    }
+
+    /**
+     * Export DB → file for all locales of a given scope.
+     *
+     * @param string $scope
+     * @param string[]|null $locales
+     * @return bool
+     */
+    public static function exportScope(string $scope, ?array $locales = null): bool
+    {
+        $languages = $locales ?: self::getLanguages()->pluck('code')->all();
+
+        $texts = AppText::query()
+            ->where('scope', $scope)
+            ->get(['id', 'text']);
+
+        $idToKey = $texts->pluck('text', 'id');
+        $keys = $texts->pluck('text')->all();
+
+        foreach ($languages as $locale) {
+            $map = array_fill_keys($keys, null);
+
+            $trs = AppTextTranslation::query()
+                ->where('lang_code', $locale)
+                ->whereIn('app_text_id', $texts->pluck('id'))
+                ->get(['app_text_id', 'text']);
+
+            foreach ($trs as $tr) {
+                $key = $idToKey[$tr->app_text_id] ?? null;
+                if ($key !== null && ($tr->text ?? '') !== '') {
+                    $map[$key] = $tr->text;
                 }
             }
-        } else {
-            foreach ($locales as $code) {
-                unset(self::$inRequest[$scope . '|' . $code]);
+
+            // Fill missing translations with the key itself
+            foreach ($map as $k => $v) {
+                $map[$k] = $v ?? $k;
+            }
+            ksort($map);
+
+            if (!self::store()->write($scope, $locale, $map)) {
+                return false;
+            }
+
+            self::$memo[self::mkMemo($scope, $locale)] = $map;
+        }
+
+        return true;
+    }
+
+    /**
+     * Resolve available languages from DB or config.
+     *
+     * @return Collection<int,array{code:string,name:string}>
+     */
+    public static function getLanguages(): Collection
+    {
+        $mode = (string)Config::get('simple-translation.use_locales_from', 'config');
+
+        if ($mode === 'database') {
+            try {
+                return AppLanguage::query()->select(['code', 'name'])->active()->get();
+            } catch (\Throwable) {
+                // Fall back to config
             }
         }
 
-        // Redis cache clear cross-request cache
-        $useCache = self::cacheEnabled();
-        $driver = self::getCacheDriver();
-        if (!$useCache || $driver !== CacheDriver::Redis) {
-            return;
+        $override = Config::get('simple-translation.locales.override');
+        if (is_array($override) && !empty($override)) {
+            return collect(array_map(
+                fn($c) => ['code' => $c, 'name' => strtoupper($c)],
+                $override
+            ));
         }
 
-        $store = $driver->value;
-        $prefix = self::getCachePrefix();
+        return collect((array)Config::get('simple-translation.config_locales', [
+            ['code' => 'en', 'name' => 'English'],
+        ]));
+    }
 
-        $codes = $locales ?: self::getLanguages()->pluck('code')->all();
-        foreach ($codes as $code) {
-            Cache::store($store)->forget(self::redisKeyList($prefix, $scope, $code));
+    /**
+     * Ensure DB row exists for key+scope.
+     *
+     * @param string $key
+     * @param string $scope
+     * @return void
+     */
+    private static function ensureDbKey(string $key, string $scope): void
+    {
+        AppText::query()->updateOrCreate(['scope' => $scope, 'text' => $key]);
+    }
+
+    /**
+     * Look up translation in DB.
+     *
+     * @param string $key
+     * @param string $scope
+     * @param string $locale
+     * @return string|null
+     */
+    private static function lookupDb(string $key, string $scope, string $locale): ?string
+    {
+        $text = AppText::query()
+            ->where('scope', $scope)
+            ->where('text', $key)
+            ->first(['id']);
+
+        if (!$text) {
+            return null;
         }
+
+        $tr = AppTextTranslation::query()
+            ->where('app_text_id', $text->id)
+            ->where('lang_code', $locale)
+            ->value('text');
+
+        return $tr ?: null;
     }
 
-    private static function redisKeyList(string $prefix, string $scope, string $locale): string
+    /**
+     * Resolve configured store driver.
+     *
+     * @return StoreDriver
+     */
+    private static function store(): StoreDriver
     {
-        // namespacing: {{simple_translation_prefix}}:list:{scope}:{locale}
-        return rtrim($prefix, ':') . ':list:' . $scope . ':' . $locale;
+        return app(StoreDriver::class);
     }
 
-    public static function getLanguages(): Collection
+    /**
+     * Build memo cache key.
+     *
+     * @param string $scope
+     * @param string $locale
+     * @return string
+     */
+    private static function mkMemo(string $scope, string $locale): string
     {
-        return self::getUsingFrom()->getLanguages();
-    }
-
-    public static function usingDatabase(): bool
-    {
-        return self::getUsingFrom() === UseLocalesFrom::Database;
-    }
-
-    public static function usingConfig(): bool
-    {
-        return self::getUsingFrom() === UseLocalesFrom::Config;
-    }
-
-    private static function getUsingFrom(): UseLocalesFrom
-    {
-        return UseLocalesFrom::tryFrom(Config::get('simple-translation.use_locales_from')) ?? UseLocalesFrom::Database;
-    }
-
-    private static function getDriver(): TranslationDriver
-    {
-        return TranslationDriver::tryFrom(Config::get('simple-translation.translations.driver')) ?? TranslationDriver::JSON;
-    }
-
-    private static function getDefaultScope(): string
-    {
-        return Config::get('simple-translation.default_scope', 'app');
-    }
-
-    private static function getCacheDriver(): CacheDriver
-    {
-        return CacheDriver::tryFrom(Config::get('simple-translation.cache.driver')) ?? CacheDriver::InMemory;
-    }
-
-    private static function getCacheTtl(): int
-    {
-        return Config::get('simple-translation.cache.ttl', 300);
-    }
-
-    private static function getCachePrefix(): string
-    {
-        return Config::get('simple-translation.cache.prefix', 'simple_translation');
-    }
-
-    private static function cacheEnabled(): bool
-    {
-        return (bool)Config::get('simple-translation.cache.enabled', true);
+        return $scope . '|' . $locale;
     }
 }
