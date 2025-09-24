@@ -3,6 +3,7 @@
 namespace Aslnbxrz\SimpleTranslation;
 
 use Aslnbxrz\SimpleTranslation\Console\ExportTranslationsCommand;
+use Aslnbxrz\SimpleTranslation\Console\ImportTranslationsCommand;
 use Aslnbxrz\SimpleTranslation\Console\ScanTranslationsCommand;
 use Aslnbxrz\SimpleTranslation\Console\SyncTranslationsCommand;
 use Aslnbxrz\SimpleTranslation\Stores\Contracts\StoreDriver;
@@ -47,11 +48,18 @@ class SimpleTranslationServiceProvider extends ServiceProvider
             => database_path('migrations/0001_01_01_000004_create_app_languages_table.php'),
         ], 'simple-translation-migrations');
 
+        // Seeder publish
+        $this->publishes([
+            __DIR__ . '/../database/seeders/SimpleTranslationSeeder.php'
+            => database_path('seeders/SimpleTranslationSeeder.php'),
+        ], 'simple-translation-seeders');
+
         // Commands
         if ($this->app->runningInConsole()) {
             $this->commands([
                 ScanTranslationsCommand::class,
                 ExportTranslationsCommand::class,
+                ImportTranslationsCommand::class,
                 SyncTranslationsCommand::class,
             ]);
         }

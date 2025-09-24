@@ -9,6 +9,8 @@ use Aslnbxrz\SimpleTranslation\Stores\Contracts\StoreDriver;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\DB;
+use Throwable;
 
 /**
  * Core translation service.
@@ -140,7 +142,7 @@ class AppLanguageService
         if ($mode === 'database') {
             try {
                 return AppLanguage::query()->select(['code', 'name'])->active()->get();
-            } catch (\Throwable) {
+            } catch (Throwable) {
                 // Fall back to config
             }
         }
@@ -156,6 +158,84 @@ class AppLanguageService
         return collect((array)Config::get('simple-translation.config_locales', [
             ['code' => 'en', 'name' => 'English'],
         ]));
+    }
+
+    /**
+     * Import file store -> DB for given scope and locales.
+     * If truncate_on_import = true, both tables are truncated once (call with $firstRun=true).
+     *
+     * @param string $scope
+     * @param array|null $locales null => all configured (getLanguages)
+     * @param bool $firstRun true -> apply truncate if enabled
+     * @return bool
+     */
+    public static function importScope(string $scope, ?array $locales = null, bool $firstRun = false): bool
+    {
+        $locales ??= self::getLanguages()->pluck('code')->all();
+
+        // Truncate once if enabled
+        if ($firstRun && Config::get('simple-translation.translations.truncate_on_import', false)) {
+            try {
+                DB::table('app_text_translations')->truncate();
+                DB::table('app_texts')->truncate();
+            } catch (Throwable) {}
+        }
+
+        // For merge mode, we need all keys present in store across locales:
+        $allKeys = [];
+
+        foreach ($locales as $locale) {
+            $map = self::store()->read($scope, $locale); // [key => value]
+            if (empty($map)) {
+                continue;
+            }
+            $allKeys = array_unique(array_merge($allKeys, array_keys($map)));
+        }
+
+        // No files found → nothing to import (not an error)
+        if (empty($allKeys)) {
+            return true;
+        }
+
+        // Ensure all keys exist in DB under this scope
+        foreach ($allKeys as $key) {
+            self::ensureDbKey($key, $scope);
+        }
+
+        // Write translations row-by-row
+        foreach ($locales as $locale) {
+            $map = self::store()->read($scope, $locale);
+            if (empty($map)) {
+                continue;
+            }
+
+            foreach ($map as $key => $value) {
+                // Default policy: if empty, store key itself
+                $text = ($value === null || $value === '') ? $key : $value;
+
+                // find key id
+                $textRow = AppText::query()
+                    ->where('scope', $scope)
+                    ->where('text', $key)
+                    ->first(['id']);
+
+                if (!$textRow) {
+                    // should not happen (we ensured above), but safeguard:
+                    $textRow = AppText::query()
+                        ->updateOrCreate(['scope' => $scope, 'text' => $key]);
+                }
+
+                AppTextTranslation::query()->updateOrCreate(
+                    ['app_text_id' => $textRow->id, 'lang_code' => $locale],
+                    ['text' => $text]
+                );
+            }
+
+            // Also refresh memo cache for this scope/locale for current request:
+            self::$memo[self::mkMemo($scope, $locale)] = $map;
+        }
+
+        return true;
     }
 
     /**

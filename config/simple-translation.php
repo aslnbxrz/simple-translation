@@ -26,14 +26,23 @@ return [
             // storage/lang/json/{locale}/{scope}.json
             'json-per-scope' => [
                 'base_dir' => lang_path(),
-                'pretty'   => false, // pretty print json
-                'lock'     => true,  // LOCK_EX on write
+                'pretty' => false, // pretty print json
+                'lock' => true,  // LOCK_EX on write
             ],
             // lang/vendor/simple-translation/{locale}/{scope}.php
             'php-array-per-scope' => [
                 'base_dir' => lang_path('vendor/simple-translation'),
-                'lock'     => true,  // LOCK_EX on write
+                'lock' => true,  // LOCK_EX on write
             ],
         ],
+
+        // Auto restore (import) on seeding:
+        // If true, SimpleTranslationSeeder will import translations from files if DB is empty.
+        'restore_on_seed' => true,
+
+        // refill DB while importing:
+        // true => app_texts va app_text_translations will be truncated
+        // false => existing will be preserved, new will be added, missing will be removed (merge)
+        'truncate_on_import' => false,
     ],
 ];
